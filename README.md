@@ -16,7 +16,7 @@
 ## 一键安装（Linux）
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/awssb-panel/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/linglala/awsxzs/main/install.sh | sudo bash
 ```
 
 或手动安装：
