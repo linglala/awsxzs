@@ -13,7 +13,6 @@ echo "║       AWS.sb 面板 一键安装           ║"
 echo "╚══════════════════════════════════════╝"
 echo -e "${NC}"
 
-# 检查 root
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}请使用 root 权限运行: sudo bash install.sh${NC}"
   exit 1
@@ -21,8 +20,8 @@ fi
 
 INSTALL_DIR="/opt/awssb-panel"
 SERVICE_NAME="awssb-panel"
+REPO="linglala/awsxzs"
 
-# 读取配置
 echo -e "${YELLOW}请设置面板配置：${NC}"
 read -p "面板端口 [默认 5000]: " PORT
 PORT=${PORT:-5000}
@@ -41,17 +40,27 @@ mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
 echo -e "${GREEN}[3/6] 下载项目文件...${NC}"
-# 如果是从 Git 安装
 if [ -d ".git" ]; then
   git pull
 else
-  # 直接从 GitHub 克隆
-  REPO_URL="https://github.com/linglala/awsxzs"
-  if git clone $REPO_URL . 2>/dev/null; then
-    echo "从 GitHub 克隆成功"
-  else
-    echo -e "${YELLOW}未找到 Git 仓库，使用当前目录文件${NC}"
-    cp -r /tmp/awssb_panel/* . 2>/dev/null || true
+  MIRRORS=(
+    "https://ghfast.top/https://github.com/${REPO}"
+    "https://gh-proxy.com/https://github.com/${REPO}"
+    "https://mirror.ghproxy.com/https://github.com/${REPO}"
+    "https://github.com/${REPO}"
+  )
+  CLONED=false
+  for MIRROR in "${MIRRORS[@]}"; do
+    echo -e "尝试: $MIRROR"
+    if git clone "$MIRROR" . 2>/dev/null; then
+      echo -e "${GREEN}下载成功${NC}"
+      CLONED=true
+      break
+    fi
+  done
+  if [ "$CLONED" = false ]; then
+    echo -e "${RED}所有镜像下载失败，请手动上传文件到 ${INSTALL_DIR}${NC}"
+    exit 1
   fi
 fi
 
@@ -61,7 +70,7 @@ source venv/bin/activate
 pip install -q -r requirements.txt
 
 echo -e "${GREEN}[5/6] 创建配置文件...${NC}"
-cat > config.json << EOF
+cat > config.json << CONF
 {
   "username": "${PANEL_USER}",
   "password": "${PANEL_PASS}",
@@ -71,10 +80,11 @@ cat > config.json << EOF
   "check_port": 22,
   "bark_url": ""
 }
-EOF
+CONF
 
 echo -e "${GREEN}[6/6] 创建系统服务...${NC}"
-cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
+SECRET_KEY=$(openssl rand -hex 32)
+cat > /etc/systemd/system/${SERVICE_NAME}.service << SVCEOF
 [Unit]
 Description=AWS.sb Panel
 After=network.target
@@ -86,20 +96,19 @@ WorkingDirectory=${INSTALL_DIR}
 Environment="PORT=${PORT}"
 Environment="PANEL_USER=${PANEL_USER}"
 Environment="PANEL_PASS=${PANEL_PASS}"
-Environment="SECRET_KEY=$(openssl rand -hex 32)"
+Environment="SECRET_KEY=${SECRET_KEY}"
 ExecStart=${INSTALL_DIR}/venv/bin/python app.py
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SVCEOF
 
 systemctl daemon-reload
 systemctl enable $SERVICE_NAME
 systemctl restart $SERVICE_NAME
 
-# 获取服务器 IP
 SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 
 echo -e "\n${GREEN}╔══════════════════════════════════════════╗${NC}"
