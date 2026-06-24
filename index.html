@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AWS.sb 面板</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f5f5;--bg2:#fff;--bg3:#f9fafb;
+  --border:#e5e7eb;--border2:#d1d5db;
+  --text:#111;--text2:#6b7280;--text3:#9ca3af;
+  --green:#16a34a;--green-bg:#f0fdf4;--green-border:#bbf7d0;
+  --red:#dc2626;--red-bg:#fef2f2;--red-border:#fecaca;
+  --yellow:#d97706;--yellow-bg:#fffbeb;--yellow-border:#fde68a;
+  --blue:#1d4ed8;--blue-bg:#eff6ff;--blue-border:#bfdbfe;
+  --purple:#7c3aed;
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Inter',sans-serif;font-size:14px;min-height:100vh}
+
+.nav{background:var(--bg2);border-bottom:1px solid var(--border);padding:0 24px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.nav-left{display:flex;align-items:center;gap:10px}
+.nav-logo{width:28px;height:28px;background:#111;border-radius:7px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px}
+.nav-title{font-size:14px;font-weight:600;color:var(--text)}
+.nav-right{display:flex;align-items:center;gap:8px}
+
+.btn{background:var(--bg2);border:1px solid var(--border);color:var(--text2);padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all 0.15s;white-space:nowrap}
+.btn:hover{background:var(--bg3);border-color:var(--border2)}
+.btn-dark{background:#111;border-color:#111;color:#fff}
+.btn-dark:hover{background:#333;border-color:#333}
+.btn-blue{background:var(--blue-bg);border-color:var(--blue-border);color:var(--blue)}
+.btn-blue:hover{background:#dbeafe}
+.btn-red{background:var(--red-bg);border-color:var(--red-border);color:var(--red)}
+.btn-red:hover{background:#fee2e2}
+.btn-sm{padding:4px 10px;font-size:11px}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;border-radius:20px;font-weight:500}
+.badge-green{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
+.badge-red{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+
+.main{padding:24px;max-width:1100px;margin:0 auto}
+
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px}
+.stat{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.stat-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:5px}
+.stat-value{font-size:22px;font-weight:600;color:var(--text)}
+.stat-sub{font-size:11px;color:var(--text3);margin-top:2px}
+
+.section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.section-title{font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px}
+
+.table-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:22px}
+table{width:100%;border-collapse:collapse}
+th{padding:10px 14px;text-align:left;font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;border-bottom:1px solid var(--border);white-space:nowrap;background:var(--bg3)}
+td{padding:12px 14px;border-bottom:1px solid #f9fafb;vertical-align:middle;color:var(--text2)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafafa}
+.iname{font-weight:500;color:var(--text);font-size:13px}
+.iid{font-size:11px;color:var(--text3);font-family:monospace;margin-top:2px}
+.ip-cell{font-family:monospace;font-size:11px;color:var(--text2)}
+.ip-cell span{display:block;line-height:1.7}
+
+.status{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;border-radius:5px;font-weight:500;white-space:nowrap}
+.status-ok{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
+.status-fail{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
+.status-warn{background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow-border)}
+.status-unknown{background:var(--bg3);color:var(--text3);border:1px solid var(--border)}
+.status-replacing{background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow-border);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.5}}
+
+.toggle{position:relative;width:32px;height:18px;cursor:pointer;display:inline-block}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;background:var(--border2);border-radius:9px;transition:0.2s}
+.toggle-slider:before{content:'';position:absolute;width:12px;height:12px;left:3px;top:3px;background:#fff;border-radius:50%;transition:0.2s}
+.toggle input:checked+.toggle-slider{background:var(--green)}
+.toggle input:checked+.toggle-slider:before{transform:translateX(14px)}
+
+.history-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.history-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #f9fafb;font-size:12px}
+.history-item:last-child{border-bottom:none}
+.h-icon{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;font-weight:600}
+.h-icon-success{background:var(--green-bg);color:var(--green)}
+.h-icon-error{background:var(--red-bg);color:var(--red)}
+.h-icon-info{background:var(--blue-bg);color:var(--blue)}
+.h-text{flex:1;color:var(--text2)}.h-text strong{color:var(--text)}
+.h-time{color:var(--text3);white-space:nowrap;font-size:11px}
+.history-empty{padding:32px;text-align:center;color:var(--text3)}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(2px)}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:24px;width:460px;max-width:90vw;max-height:90vh;overflow-y:auto}
+.modal h3{font-size:15px;font-weight:600;color:var(--text);margin-bottom:18px}
+.form-group{margin-bottom:14px}
+.form-label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px;font-weight:500}
+.form-input{width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 11px;border-radius:7px;font-size:13px;font-family:monospace;outline:none;transition:border-color 0.15s}
+.form-input:focus{border-color:#111}
+.form-input.normal{font-family:-apple-system,'Inter',sans-serif}
+.form-row{display:flex;gap:10px}
+.form-row .form-group{flex:1}
+.modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)}
+.hint{font-size:11px;color:var(--text3);margin-top:4px}
+.divider{border:none;border-top:1px solid var(--border);margin:16px 0}
+.settings-section h4{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px}
+
+.toast{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:11px 16px;font-size:13px;z-index:200;display:flex;align-items:center;gap:8px;transform:translateY(80px);opacity:0;transition:all 0.25s;max-width:300px;color:var(--text2)}
+.toast.show{transform:translateY(0);opacity:1}
+.toast-success{border-color:var(--green-border);color:var(--green)}
+.toast-error{border-color:var(--red-border);color:var(--red)}
+.toast-info{border-color:var(--blue-border);color:var(--blue)}
+
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="nav-left">
+    <div class="nav-logo">☁</div>
+    <span class="nav-title">AWS.sb 面板</span>
+    <span class="badge badge-green" id="monitor-badge"><span class="dot"></span>监控中</span>
+  </div>
+  <div class="nav-right">
+    <button class="btn" onclick="openImport()">⬇ 导入 SGT</button>
+    <button class="btn" onclick="openAddModal()">+ 添加实例</button>
+    <button class="btn" onclick="openSettings()">⚙ 设置</button>
+    <button class="btn btn-dark" onclick="logout()">退出</button>
+  </div>
+</nav>
+
+<div class="main">
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">实例总数</div>
+      <div class="stat-value" id="s-total">0</div>
+      <div class="stat-sub">已配置</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">IPv4 正常</div>
+      <div class="stat-value" style="color:var(--green)" id="s-ok4">0</div>
+      <div class="stat-sub">/ <span id="s-total2">0</span> 台</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">IPv6 正常</div>
+      <div class="stat-value" style="color:var(--blue)" id="s-ok6">0</div>
+      <div class="stat-sub">/ <span id="s-total3">0</span> 台</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">今日换IP</div>
+      <div class="stat-value" style="color:var(--purple)" id="s-replaced">0</div>
+      <div class="stat-sub">次</div>
+    </div>
+  </div>
+
+  <div class="section-header">
+    <span class="section-title">实例列表</span>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" onclick="refreshInstances()">↻ 刷新</button>
+      <button class="btn btn-sm btn-red" onclick="replaceAll()">⚡ 全部换IP</button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>实例</th>
+          <th>IP 地址</th>
+          <th>IPv4 检测</th>
+          <th>IPv6 检测</th>
+          <th>最后检测</th>
+          <th>自动换IP</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="instances-tbody">
+        <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">加载中...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-header">
+    <span class="section-title">换IP历史</span>
+    <button class="btn btn-sm" onclick="clearHistory()">清空</button>
+  </div>
+  <div class="history-wrap">
+    <div id="history-list"><div class="history-empty">暂无记录</div></div>
+  </div>
+</div>
+
+<!-- 添加实例弹窗 -->
+<div class="modal-overlay" id="add-modal" style="display:none" onclick="if(event.target===this)closeModal('add-modal')">
+  <div class="modal">
+    <h3>添加实例</h3>
+    <div class="form-group">
+      <label class="form-label">备注名称</label>
+      <input class="form-input normal" id="f-name" placeholder="如：新加坡节点 1"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">SGT Token</label>
+      <input class="form-input" id="f-sgt" placeholder="9d4c9a5adbb44307acc8034906a7e187"/>
+      <div class="hint">从 aws.sb URL 中的 sgt= 参数获取</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Instance ID</label>
+        <input class="form-input" id="f-iid" placeholder="i-0843e8b907d1d6f65"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Profile ID</label>
+        <input class="form-input" id="f-pid" placeholder="6abd17ba19344279"/>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">检测端口</label>
+        <input class="form-input" id="f-port" value="22"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">区域</label>
+        <input class="form-input normal" id="f-region" placeholder="ap-southeast-1"/>
+      </div>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+      <label class="form-label" style="margin:0">启用自动换IP</label>
+      <label class="toggle"><input type="checkbox" id="f-auto" checked/><span class="toggle-slider"></span></label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('add-modal')">取消</button>
+      <button class="btn btn-dark" onclick="addInstance()">确认添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 导入 SGT 弹窗 -->
+<div class="modal-overlay" id="import-modal" style="display:none" onclick="if(event.target===this)closeModal('import-modal')">
+  <div class="modal">
+    <h3>通过 SGT 导入</h3>
+    <div class="form-group">
+      <label class="form-label">SGT Token</label>
+      <input class="form-input" id="import-sgt" placeholder="9d4c9a5adbb44307acc8034906a7e187"/>
+      <div class="hint">自动拉取该 SGT 下所有实例并导入</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('import-modal')">取消</button>
+      <button class="btn btn-dark" onclick="importSgt()">导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置弹窗 -->
+<div class="modal-overlay" id="settings-modal" style="display:none" onclick="if(event.target===this)closeModal('settings-modal')">
+  <div class="modal">
+    <h3>系统设置</h3>
+    <div class="settings-section" style="margin-bottom:18px">
+      <h4>监控设置</h4>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">检测间隔（秒）</label>
+          <input class="form-input normal" id="s-interval" type="number" min="30"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">连续失败次数触发换IP</label>
+          <input class="form-input normal" id="s-threshold" type="number" min="1"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">默认检测端口</label>
+        <input class="form-input normal" id="s-port" type="number"/>
+      </div>
+    </div>
+    <hr class="divider"/>
+    <div class="settings-section" style="margin-bottom:18px">
+      <h4>Bark 通知</h4>
+      <div class="form-group">
+        <label class="form-label">Bark URL</label>
+        <input class="form-input normal" id="s-bark" placeholder="https://api.day.app/your-key"/>
+        <div class="hint">换IP时发送推送通知到手机</div>
+      </div>
+    </div>
+    <hr class="divider"/>
+    <div class="settings-section">
+      <h4>账号设置</h4>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">用户名</label>
+          <input class="form-input normal" id="s-user"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">新密码（留空不修改）</label>
+          <input class="form-input normal" id="s-pass" type="password" placeholder="••••••••"/>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('settings-modal')">取消</button>
+      <button class="btn btn-dark" onclick="saveSettings()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const socket = io();
+let instances = [];
+let historyData = [];
+let replaceCount = 0;
+
+socket.on('status_update', data => { updateInstanceRow(data); updateStats(); });
+socket.on('replacing', data => {
+  const row = document.getElementById('row-'+data.profile_id);
+  if(row) row.querySelector('.v4-status').innerHTML = statusBadge('replacing','换IP中...');
+});
+socket.on('history_update', entry => {
+  historyData.unshift(entry);
+  if(entry.event.includes('换IP')&&entry.status==='success') replaceCount++;
+  renderHistory(); updateStats();
+});
+
+function toast(msg, type='info'){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast show toast-${type}`;
+  setTimeout(()=>t.className='toast', 2800);
+}
+
+function statusBadge(type, text){
+  const map={ok:'status-ok',fail:'status-fail',warn:'status-warn',unknown:'status-unknown',replacing:'status-replacing'};
+  return `<span class="status ${map[type]||'status-unknown'}"><span class="dot"></span>${text}</span>`;
+}
+
+function parseStatus(s){
+  if(!s||s==='unknown'||s==='无IP'||s==='无IPv6') return {type:'unknown',text:s||'检测中'};
+  if(s.includes('通 ')&&!s.includes('不通')) return {type:'ok',text:s};
+  if(s.includes('不通')) return {type:'warn',text:s};
+  return {type:'unknown',text:s};
+}
+
+function renderInstances(){
+  const tbody = document.getElementById('instances-tbody');
+  if(!instances.length){
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">暂无实例，点击右上角添加</td></tr>';
+    return;
+  }
+  tbody.innerHTML = instances.map(inst => {
+    const v4=parseStatus(inst.ipv4_status), v6=parseStatus(inst.ipv6_status);
+    return `<tr id="row-${inst.profile_id}">
+      <td>
+        <div class="iname">${inst.name}</div>
+        <div class="iid">${inst.instance_id}</div>
+        ${inst.region?`<div class="iid">${inst.region}</div>`:''}
+      </td>
+      <td class="ip-cell">
+        <span>${inst.ipv4||'获取中...'}</span>
+        <span style="color:var(--text3)">${inst.ipv6||''}</span>
+      </td>
+      <td class="v4-status">${statusBadge(v4.type,v4.text)}</td>
+      <td class="v6-status">${statusBadge(v6.type,v6.text)}</td>
+      <td style="color:var(--text3);font-size:12px">${inst.last_check||'—'}</td>
+      <td>
+        <label class="toggle" onclick="toggleAuto('${inst.profile_id}')">
+          <input type="checkbox" ${inst.auto_replace?'checked':''} onclick="event.preventDefault()"/>
+          <span class="toggle-slider"></span>
+        </label>
+      </td>
+      <td>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm btn-blue" onclick="replaceOne('${inst.profile_id}')">换IP</button>
+          <button class="btn btn-sm" style="color:var(--red);border-color:var(--red-border)" onclick="deleteInstance('${inst.profile_id}')">删除</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function updateInstanceRow(data){
+  const row = document.getElementById('row-'+data.profile_id);
+  if(!row) return;
+  const inst = instances.find(i=>i.profile_id===data.profile_id);
+  if(inst) Object.assign(inst, data);
+  const v4=parseStatus(data.ipv4_status), v6=parseStatus(data.ipv6_status);
+  row.querySelector('.v4-status').innerHTML = statusBadge(v4.type,v4.text);
+  row.querySelector('.v6-status').innerHTML = statusBadge(v6.type,v6.text);
+  const cells = row.querySelectorAll('td');
+  cells[1].innerHTML = `<div class="ip-cell"><span>${data.ipv4||'—'}</span><span style="color:var(--text3)">${data.ipv6||''}</span></div>`;
+  cells[4].textContent = data.last_check||'—';
+}
+
+function updateStats(){
+  document.getElementById('s-total').textContent = instances.length;
+  document.getElementById('s-total2').textContent = instances.length;
+  document.getElementById('s-total3').textContent = instances.length;
+  const ok4=instances.filter(i=>i.ipv4_status&&i.ipv4_status.includes('通 ')&&!i.ipv4_status.includes('不通')).length;
+  const ok6=instances.filter(i=>i.ipv6_status&&i.ipv6_status.includes('通 ')&&!i.ipv6_status.includes('不通')).length;
+  document.getElementById('s-ok4').textContent = ok4;
+  document.getElementById('s-ok6').textContent = ok6;
+  document.getElementById('s-replaced').textContent = replaceCount;
+}
+
+function renderHistory(){
+  const list = document.getElementById('history-list');
+  if(!historyData.length){list.innerHTML='<div class="history-empty">暂无记录</div>';return;}
+  const iconMap={success:'h-icon-success',error:'h-icon-error',info:'h-icon-info'};
+  const textMap={success:'✓',error:'✗',info:'i'};
+  list.innerHTML = historyData.slice(0,80).map(h=>`
+    <div class="history-item">
+      <div class="h-icon ${iconMap[h.status]||'h-icon-info'}">${textMap[h.status]||'i'}</div>
+      <div class="h-text"><strong>${h.name}</strong> · ${h.event} · ${h.detail}</div>
+      <div class="h-time">${h.time}</div>
+    </div>`).join('');
+}
+
+async function refreshInstances(){
+  const resp = await fetch('/api/instances');
+  if(resp.status===401){location.href='/login';return}
+  instances = await resp.json();
+  renderInstances(); updateStats();
+}
+
+async function replaceOne(profileId){
+  const inst = instances.find(i=>i.profile_id===profileId);
+  toast(`${inst?.name||profileId} 换IP中...`,'info');
+  const resp = await fetch(`/api/instances/${profileId}/replace`,{method:'POST'});
+  const data = await resp.json();
+  if(data.ok) toast(`${inst?.name} 换IP成功 ✓`,'success');
+  else toast(`换IP失败: ${data.error}`,'error');
+}
+
+async function replaceAll(){
+  if(!instances.length){toast('没有实例','error');return}
+  if(!confirm(`确认对全部 ${instances.length} 台实例换IP？`)) return;
+  for(const inst of instances) await fetch(`/api/instances/${inst.profile_id}/replace`,{method:'POST'});
+  toast('全部换IP指令已发送','info');
+}
+
+async function toggleAuto(profileId){
+  const resp = await fetch(`/api/instances/${profileId}/toggle`,{method:'POST'});
+  const data = await resp.json();
+  const inst = instances.find(i=>i.profile_id===profileId);
+  if(inst) inst.auto_replace = data.auto_replace;
+  renderInstances();
+}
+
+async function deleteInstance(profileId){
+  const inst = instances.find(i=>i.profile_id===profileId);
+  if(!confirm(`确认删除 ${inst?.name}？`)) return;
+  await fetch(`/api/instances/${profileId}`,{method:'DELETE'});
+  await refreshInstances();
+  toast('已删除','info');
+}
+
+async function clearHistory(){
+  if(!confirm('确认清空所有历史记录？')) return;
+  await fetch('/api/history',{method:'DELETE'});
+  historyData=[]; renderHistory();
+}
+
+function openAddModal(){document.getElementById('add-modal').style.display='flex'}
+function openImport(){document.getElementById('import-modal').style.display='flex'}
+function closeModal(id){document.getElementById(id).style.display='none'}
+
+async function openSettings(){
+  const resp = await fetch('/api/settings');
+  const s = await resp.json();
+  document.getElementById('s-interval').value=s.check_interval;
+  document.getElementById('s-threshold').value=s.fail_threshold;
+  document.getElementById('s-port').value=s.check_port;
+  document.getElementById('s-bark').value=s.bark_url;
+  document.getElementById('s-user').value=s.username;
+  document.getElementById('settings-modal').style.display='flex';
+}
+
+async function addInstance(){
+  const body={
+    name:document.getElementById('f-name').value.trim(),
+    sgt:document.getElementById('f-sgt').value.trim(),
+    instance_id:document.getElementById('f-iid').value.trim(),
+    profile_id:document.getElementById('f-pid').value.trim(),
+    check_port:parseInt(document.getElementById('f-port').value)||22,
+    region:document.getElementById('f-region').value.trim(),
+    auto_replace:document.getElementById('f-auto').checked
+  };
+  if(!body.sgt||!body.instance_id||!body.profile_id){toast('SGT、Instance ID、Profile ID 必填','error');return}
+  toast('验证中...','info');
+  const resp = await fetch('/api/instances',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data = await resp.json();
+  if(data.ok){closeModal('add-modal');await refreshInstances();toast(body.name+' 添加成功','success')}
+  else toast('添加失败: '+data.error,'error');
+}
+
+async function importSgt(){
+  const sgt = document.getElementById('import-sgt').value.trim();
+  if(!sgt){toast('请填写 SGT','error');return}
+  toast('导入中...','info');
+  const resp = await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sgt})});
+  const data = await resp.json();
+  if(data.ok){closeModal('import-modal');await refreshInstances();toast(`导入成功，新增 ${data.added} 台实例`,'success')}
+  else toast('导入失败: '+data.error,'error');
+}
+
+async function saveSettings(){
+  const body={
+    check_interval:parseInt(document.getElementById('s-interval').value),
+    fail_threshold:parseInt(document.getElementById('s-threshold').value),
+    check_port:parseInt(document.getElementById('s-port').value),
+    bark_url:document.getElementById('s-bark').value.trim(),
+    username:document.getElementById('s-user').value.trim(),
+    password:document.getElementById('s-pass').value
+  };
+  const resp = await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data = await resp.json();
+  if(data.ok){closeModal('settings-modal');toast('设置已保存','success')}
+  else toast('保存失败','error');
+}
+
+async function logout(){
+  await fetch('/api/logout',{method:'POST'});
+  location.href='/login';
+}
+
+async function init(){
+  await refreshInstances();
+  const hResp = await fetch('/api/history');
+  historyData = await hResp.json();
+  replaceCount = historyData.filter(h=>h.event.includes('换IP')&&h.status==='success'&&h.time.startsWith(new Date().toISOString().slice(0,10))).length;
+  renderHistory(); updateStats();
+}
+init();
+</script>
+</body>
+</html>
