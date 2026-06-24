@@ -46,7 +46,7 @@ if [ -d ".git" ]; then
   git pull
 else
   # 直接从 GitHub 克隆
-  REPO_URL="https://github.com/YOUR_USERNAME/awssb-panel"
+  REPO_URL="https://github.com/linglala/awsxzs"
   if git clone $REPO_URL . 2>/dev/null; then
     echo "从 GitHub 克隆成功"
   else
