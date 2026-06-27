@@ -152,7 +152,7 @@ def cf_delete_record(token, zone_id, record_id):
                            headers=cf_headers(token), timeout=10)
     return resp.json()
 
-def cf_update_dns(group, old_ip, new_ip):
+def cf_update_dns(group, old_ip, new_ip, profile_id='', name=''):
     token = group.get('cf_token', '')
     zone_id = group.get('cf_zone_id', '')
     domain = group.get('cf_domain', '')
@@ -168,10 +168,12 @@ def cf_update_dns(group, old_ip, new_ip):
         if new_ip not in existing_ips:
             cf_add_record(token, zone_id, domain, new_ip)
             log.info(f'CF DNS 添加新IP: {new_ip}')
+            if profile_id and name:
+                add_history(profile_id, name, 'CF新增IP', f'已将 {new_ip} 添加到 {domain}', 'success')
     except Exception as e:
         log.warning(f'CF DNS 更新失败: {e}')
 
-def cf_remove_blocked_ip(group, ip):
+def cf_remove_blocked_ip(group, ip, profile_id='', name=''):
     token = group.get('cf_token', '')
     zone_id = group.get('cf_zone_id', '')
     domain = group.get('cf_domain', '')
@@ -183,6 +185,8 @@ def cf_remove_blocked_ip(group, ip):
             if r['content'] == ip:
                 cf_delete_record(token, zone_id, r['id'])
                 log.info(f'CF DNS 删除被墙IP: {ip}')
+                if profile_id and name:
+                    add_history(profile_id, name, 'CF删除IP', f'已从 {domain} 删除被墙IP: {ip}', 'error')
     except Exception as e:
         log.warning(f'CF DNS 删除失败: {e}')
 
@@ -251,6 +255,9 @@ def monitor_loop():
                     rt['ipv4_fails'] = 0
                     rt['ipv4_status'] = f'通 {ms4}ms'
                 else:
+                    if rt['ipv4_fails'] == 0:
+                        add_history(profile_id, inst['name'], 'IP疑似被墙', f'IPv4 {rt["ipv4"]} 检测不通', 'error')
+                        send_bark(f'[{inst["name"]}] IPv4 {rt["ipv4"]} 检测不通，疑似被墙')
                     rt['ipv4_fails'] += 1
                     rt['ipv4_status'] = f'不通 {rt["ipv4_fails"]}/{threshold}'
             elif not check_ipv4:
@@ -265,6 +272,9 @@ def monitor_loop():
                     rt['ipv6_fails'] = 0
                     rt['ipv6_status'] = f'通 {ms6}ms'
                 else:
+                    if rt['ipv6_fails'] == 0:
+                        add_history(profile_id, inst['name'], 'IP疑似被墙', f'IPv6 {rt["ipv6"]} 检测不通', 'error')
+                        send_bark(f'[{inst["name"]}] IPv6 {rt["ipv6"]} 检测不通，疑似被墙')
                     rt['ipv6_fails'] += 1
                     rt['ipv6_status'] = f'不通 {rt["ipv6_fails"]}/{threshold}'
             elif not check_ipv6:
@@ -297,7 +307,7 @@ def monitor_loop():
                 # 先从CF DNS删除被墙IP
                 group = get_group(inst.get('group_id', ''))
                 if group:
-                    cf_remove_blocked_ip(group, old_ip)
+                    cf_remove_blocked_ip(group, old_ip, profile_id, inst['name'])
 
                 try:
                     result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'])
@@ -619,7 +629,7 @@ def report_ip():
     if old_ip and old_ip != ip:
         group = get_group(inst.get('group_id', ''))
         if group:
-            cf_update_dns(group, old_ip, ip)
+            cf_update_dns(group, old_ip, ip, pid, inst['name'])
 
     socketio.emit('status_update', {
         'profile_id': pid,
@@ -630,7 +640,8 @@ def report_ip():
         'last_check': datetime.now().strftime('%H:%M:%S')
     })
     log.info(f'收到IP上报 {inst["name"]}: {old_ip} -> {ip}')
-    add_history(pid, inst['name'], 'IP上报', f'新IP: {ip}', 'info')
+    if old_ip != ip:
+        add_history(pid, inst['name'], 'IP上报', f'新IP: {ip}', 'info')
     return jsonify({'ok': True})
 
 # ========== 历史 ==========

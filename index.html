@@ -104,6 +104,13 @@ tr:hover td{background:#fafafa}
 .h-text{flex:1;color:var(--text2);min-width:0}.h-text strong{color:var(--text)}
 .h-time{color:var(--text3);white-space:nowrap;font-size:11px;flex-shrink:0}
 .history-empty{padding:32px;text-align:center;color:var(--text3)}
+.filter-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.filter-tag{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500;cursor:pointer;border:1px solid var(--border);background:var(--bg2);color:var(--text2);transition:all 0.15s}
+.filter-tag:hover{background:var(--bg3)}
+.filter-tag.active{background:#111;border-color:#111;color:#fff}
+.filter-tag.active-green{background:var(--green-bg);border-color:var(--green-border);color:var(--green)}
+.filter-tag.active-red{background:var(--red-bg);border-color:var(--red-border);color:var(--red)}
+.filter-tag.active-blue{background:var(--blue-bg);border-color:var(--blue-border);color:var(--blue)}
 
 /* Modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.3);display:flex;align-items:flex-end;justify-content:center;z-index:100;backdrop-filter:blur(2px)}
@@ -220,6 +227,31 @@ tr:hover td{background:#fafafa}
   <div class="section-header" style="margin-top:20px">
     <span class="section-title">换IP历史</span>
     <button class="btn btn-sm" onclick="clearHistory()">清空</button>
+  </div>
+  <div class="filter-bar">
+    <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+      <span style="font-size:11px;color:var(--text3);margin-right:2px">类型</span>
+      <span class="filter-tag active" data-group="type" data-val="">全部</span>
+      <span class="filter-tag" data-group="type" data-val="自动换IP">自动换IP</span>
+      <span class="filter-tag" data-group="type" data-val="手动换IP">手动换IP</span>
+      <span class="filter-tag" data-group="type" data-val="IP上报">IP上报</span>
+      <span class="filter-tag" data-group="type" data-val="换IP失败">换IP失败</span>
+      <span class="filter-tag" data-group="type" data-val="IP疑似被墙">IP疑似被墙</span>
+      <span class="filter-tag" data-group="type" data-val="CF删除IP">CF删除IP</span>
+      <span class="filter-tag" data-group="type" data-val="CF新增IP">CF新增IP</span>
+    </div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+      <span style="font-size:11px;color:var(--text3);margin-right:2px">状态</span>
+      <span class="filter-tag active" data-group="status" data-val="">全部</span>
+      <span class="filter-tag" data-group="status" data-val="success">成功</span>
+      <span class="filter-tag" data-group="status" data-val="error">失败</span>
+      <span class="filter-tag" data-group="status" data-val="info">信息</span>
+    </div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+      <span style="font-size:11px;color:var(--text3);margin-right:2px">分组</span>
+      <span class="filter-tag active" data-group="group" data-val="">全部</span>
+      <span id="filter-group-tags"></span>
+    </div>
   </div>
   <div class="history-wrap">
     <div id="history-list"><div class="history-empty">暂无记录</div></div>
@@ -659,12 +691,69 @@ function updateStats(){
   document.getElementById('s-replaced').textContent = replaceCount;
 }
 
+// 历史筛选状态
+let historyFilter = {type:'', status:'', group:''};
+
+function initFilterTags(){
+  document.querySelectorAll('.filter-tag').forEach(tag => {
+    tag.addEventListener('click', function(){
+      const grp = this.dataset.group;
+      const val = this.dataset.val;
+      historyFilter[grp] = val;
+      // 更新同组标签active状态
+      document.querySelectorAll(`.filter-tag[data-group="${grp}"]`).forEach(t => {
+        t.className = 'filter-tag' + (t.dataset.val === val ? ' active' : '');
+      });
+      renderHistory();
+    });
+  });
+}
+
+function updateGroupFilterTags(){
+  const container = document.getElementById('filter-group-tags');
+  if(!container) return;
+  container.innerHTML = groups.map(g =>
+    `<span class="filter-tag" data-group="group" data-val="${g.id}">${g.name}</span>`
+  ).join('');
+  // 绑定点击事件
+  container.querySelectorAll('.filter-tag').forEach(tag => {
+    tag.addEventListener('click', function(){
+      const val = this.dataset.val;
+      historyFilter.group = val;
+      document.querySelectorAll('.filter-tag[data-group="group"]').forEach(t => {
+        t.className = 'filter-tag' + (t.dataset.val === val ? ' active' : '');
+      });
+      renderHistory();
+    });
+  });
+}
+
 function renderHistory(){
   const list = document.getElementById('history-list');
-  if(!historyData.length){list.innerHTML='<div class="history-empty">暂无记录</div>';return;}
   const iconMap={success:'h-icon-success',error:'h-icon-error',info:'h-icon-info'};
   const textMap={success:'✓',error:'✗',info:'i'};
-  list.innerHTML = historyData.slice(0,80).map(h=>`
+
+  let filtered = historyData;
+
+  // 按类型筛选
+  if(historyFilter.type){
+    filtered = filtered.filter(h => h.event && h.event.includes(historyFilter.type));
+  }
+  // 按状态筛选
+  if(historyFilter.status){
+    filtered = filtered.filter(h => h.status === historyFilter.status);
+  }
+  // 按分组筛选
+  if(historyFilter.group){
+    const groupInsts = instances.filter(i => i.group_id === historyFilter.group).map(i => i.profile_id);
+    filtered = filtered.filter(h => groupInsts.includes(h.profile_id));
+  }
+
+  if(!filtered.length){
+    list.innerHTML='<div class="history-empty">暂无记录</div>';
+    return;
+  }
+  list.innerHTML = filtered.slice(0,80).map(h=>`
     <div class="history-item">
       <div class="h-icon ${iconMap[h.status]||'h-icon-info'}">${textMap[h.status]||'i'}</div>
       <div class="h-text"><strong>${h.name}</strong> · ${h.event} · ${h.detail}</div>
@@ -696,6 +785,7 @@ async function refreshGroups(){
   const resp = await fetch('/api/groups');
   groups = await resp.json();
   populateGroupSelects();
+  updateGroupFilterTags();
 }
 
 async function replaceOne(profileId){
@@ -918,6 +1008,7 @@ async function logout(){
 async function init(){
   await refreshGroups();
   await refreshInstances();
+  initFilterTags();
   const hResp=await fetch('/api/history');
   historyData=await hResp.json();
   replaceCount=historyData.filter(h=>h.event.includes('换IP')&&h.status==='success'&&h.time.startsWith(new Date().toISOString().slice(0,10))).length;
