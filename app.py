@@ -626,10 +626,25 @@ def report_ip():
     rt['ipv6_fails'] = 0
 
     # 更新CF DNS
-    if old_ip and old_ip != ip:
-        group = get_group(inst.get('group_id', ''))
-        if group:
+    group = get_group(inst.get('group_id', ''))
+    if group:
+        if old_ip and old_ip != ip:
+            # IP变了，删旧的加新的
             cf_update_dns(group, old_ip, ip, pid, inst['name'])
+        elif not old_ip:
+            # 第一次上报，直接添加到CF DNS
+            try:
+                token = group.get('cf_token', '')
+                zone_id = group.get('cf_zone_id', '')
+                domain = group.get('cf_domain', '')
+                if token and zone_id and domain:
+                    existing_ips = [r['content'] for r in cf_list_records(token, zone_id, domain)]
+                    if ip not in existing_ips:
+                        cf_add_record(token, zone_id, domain, ip)
+                        add_history(pid, inst['name'], 'CF新增IP', f'已将 {ip} 添加到 {domain}', 'success')
+                        log.info(f'CF DNS 首次上报添加IP: {ip}')
+            except Exception as e:
+                log.warning(f'CF DNS 首次添加失败: {e}')
 
     socketio.emit('status_update', {
         'profile_id': pid,
