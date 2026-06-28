@@ -697,7 +697,7 @@ def get_settings():
 def update_settings():
     data = request.json
     if 'check_interval' in data:
-        config['check_interval'] = max(30, int(data['check_interval']))
+        config['check_interval'] = max(1, int(data['check_interval']))
     if 'fail_threshold' in data:
         config['fail_threshold'] = max(1, int(data['fail_threshold']))
     if 'check_port' in data:
