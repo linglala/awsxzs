@@ -225,11 +225,8 @@ def check_ping(ip, timeout=5):
 
 def check_ip(ip, port=22):
     if port:
-        ok, ms = check_tcp(ip, port)
-        if ok:
-            return True, ms
-    ok, ms = check_ping(ip)
-    return ok, ms
+        return check_tcp(ip, port)
+    return check_ping(ip)
 
 # ========== 监控主循环 ==========
 stop_event = threading.Event()
