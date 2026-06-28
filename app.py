@@ -109,11 +109,19 @@ def fetch_instance_profiles(sgt):
     resp.raise_for_status()
     return resp.json()
 
-def do_replace_ip(instance_id, profile_id, sgt):
+def do_replace_ip(instance_id, profile_id, sgt, region=''):
     r = rand_r()
+    headers = {**HEADERS, 'x-share-group-token': sgt}
+    if region:
+        headers['x-region-name'] = region
     resp = requests.patch(
         f'{AWSSB_BASE}/ec2-instances/{instance_id}/ip-address?r={r}',
-        headers={**HEADERS, 'x-share-group-token': sgt},
+        headers=headers,
+        json={
+            'gfw_blocked_check': True,
+            'gfw_blocked_check_port': 22,
+            'gfw_blocked_check_cron': '*/15 * * * *'
+        },
         timeout=15
     )
     resp.raise_for_status()
@@ -309,7 +317,7 @@ def monitor_loop():
                     cf_remove_blocked_ip(group, old_ip, profile_id, inst['name'])
 
                 try:
-                    result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'])
+                    result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''))
                     msg = 'IP被墙，已自动换IP'
                     add_history(profile_id, inst['name'], '自动换IP', msg, 'success')
                     send_bark(f'[{inst["name"]}] {msg}')
@@ -528,7 +536,7 @@ def manual_replace(profile_id):
     try:
         rt = get_runtime(profile_id)
         old_ip = rt.get('ipv4', '')
-        result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'])
+        result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''))
         add_history(profile_id, inst['name'], '手动换IP', '手动触发换IP成功', 'success')
         send_bark(f'[{inst["name"]}] 手动换IP成功')
         rt['ipv4_fails'] = 0
@@ -554,7 +562,7 @@ def replace_all():
     results = []
     for inst in config.get('instances', []):
         try:
-            do_replace_ip(inst['instance_id'], inst['profile_id'], inst['sgt'])
+            do_replace_ip(inst['instance_id'], inst['profile_id'], inst['sgt'], inst.get('region', ''))
             results.append({'profile_id': inst['profile_id'], 'ok': True})
         except Exception as e:
             results.append({'profile_id': inst['profile_id'], 'ok': False, 'error': str(e)})
