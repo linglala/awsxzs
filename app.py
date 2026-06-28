@@ -111,10 +111,9 @@ def fetch_instance_profiles(sgt):
 
 def do_replace_ip(instance_id, profile_id, sgt):
     r = rand_r()
-    resp = requests.post(
-        f'{AWSSB_BASE}/filter-tasks?r={r}',
+    resp = requests.patch(
+        f'{AWSSB_BASE}/ec2-instances/{instance_id}/ip-address?r={r}',
         headers={**HEADERS, 'x-share-group-token': sgt},
-        json={'tags': [instance_id, profile_id]},
         timeout=15
     )
     resp.raise_for_status()
