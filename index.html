@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>AWS.sb 面板</title>
+<title>AWS小助手</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -173,7 +173,7 @@ tr:hover td{background:#fafafa}
 <nav class="nav">
   <div class="nav-left">
     <div class="nav-logo">☁</div>
-    <span class="nav-title">AWS.sb 面板</span>
+    <span class="nav-title">AWS小助手</span>
     <span class="badge badge-green" id="monitor-badge"><span class="dot"></span>监控中</span>
   </div>
   <div class="nav-right">
@@ -373,6 +373,11 @@ tr:hover td{background:#fafafa}
       <label class="form-label">SGT Token（自动同步机器用）</label>
       <input class="form-input mono" id="g-sgt" placeholder="9d4c9a5adbb44307..."/>
       <div class="hint">填入后面板每3分钟自动同步该SGT下的所有机器</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">API 域名（可选）</label>
+      <input class="form-input mono" id="g-api-base" placeholder="https://aws.sb/api"/>
+      <div class="hint">留空使用默认 aws.sb，其他平台填入对应API地址</div>
     </div>
     <div class="divider"></div>
     <div class="settings-section">
@@ -866,6 +871,7 @@ function openAddGroup(){
   document.getElementById('g-id').value='';
   document.getElementById('g-name').value='';
   document.getElementById('g-sgt').value='';
+  document.getElementById('g-api-base').value='';
   document.getElementById('g-token').value='';
   document.getElementById('g-zone').value='';
   document.getElementById('g-domain').value='';
@@ -879,6 +885,7 @@ function openEditGroup(groupId){
   document.getElementById('g-id').value=g.id;
   document.getElementById('g-name').value=g.name||'';
   document.getElementById('g-sgt').value=g.sgt||'';
+  document.getElementById('g-api-base').value=g.api_base||'';
   document.getElementById('g-token').value=g.cf_token||'';
   document.getElementById('g-zone').value=g.cf_zone_id||'';
   document.getElementById('g-domain').value=g.cf_domain||'';
@@ -890,6 +897,7 @@ async function saveGroup(){
   const body={
     name:document.getElementById('g-name').value.trim(),
     sgt:document.getElementById('g-sgt').value.trim(),
+    api_base:document.getElementById('g-api-base').value.trim(),
     cf_token:document.getElementById('g-token').value.trim(),
     cf_zone_id:document.getElementById('g-zone').value.trim(),
     cf_domain:document.getElementById('g-domain').value.trim()

@@ -102,20 +102,22 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
 }
 
-def fetch_instance_profiles(sgt):
+def fetch_instance_profiles(sgt, api_base=''):
     r = rand_r()
-    resp = requests.get(f'{AWSSB_BASE}/ec2-instance-profiles?r={r}',
+    base = api_base.rstrip('/') if api_base else AWSSB_BASE
+    resp = requests.get(f'{base}/ec2-instance-profiles?r={r}',
                         headers={**HEADERS, 'x-share-group-token': sgt}, timeout=15)
     resp.raise_for_status()
     return resp.json()
 
-def do_replace_ip(instance_id, profile_id, sgt, region=''):
+def do_replace_ip(instance_id, profile_id, sgt, region='', api_base=''):
     r = rand_r()
+    base = api_base.rstrip('/') if api_base else AWSSB_BASE
     headers = {**HEADERS, 'x-share-group-token': sgt}
     if region:
         headers['x-region-name'] = region
     resp = requests.patch(
-        f'{AWSSB_BASE}/ec2-instances/{instance_id}/ip-address?r={r}',
+        f'{base}/ec2-instances/{instance_id}/ip-address?r={r}',
         headers=headers,
         json={
             'gfw_blocked_check': True,
@@ -314,7 +316,9 @@ def monitor_loop():
                     cf_remove_blocked_ip(group, old_ip, profile_id, inst['name'])
 
                 try:
-                    result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''))
+                    grp = get_group(inst.get('group_id', ''))
+                    api_base = grp.get('api_base', '') if grp else ''
+                    result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''), api_base)
                     msg = 'IP被墙，已自动换IP'
                     add_history(profile_id, inst['name'], '自动换IP', msg, 'success')
                     send_bark(f'[{inst["name"]}] {msg}')
@@ -335,7 +339,7 @@ def monitor_loop():
                 if not sgt:
                     continue
                 try:
-                    profiles = fetch_instance_profiles(sgt)
+                    profiles = fetch_instance_profiles(sgt, g.get('api_base', ''))
                     added = 0
                     for p in profiles:
                         existing = any(i['profile_id'] == p['id'] for i in config['instances'])
@@ -427,6 +431,7 @@ def add_group():
         'id': rand_r(8),
         'name': data['name'],
         'sgt': data.get('sgt', ''),
+        'api_base': data.get('api_base', ''),
         'cf_token': data.get('cf_token', ''),
         'cf_zone_id': data.get('cf_zone_id', ''),
         'cf_domain': data.get('cf_domain', '')
@@ -442,7 +447,7 @@ def update_group(group_id):
     if not group:
         return jsonify({'error': '不存在'}), 404
     data = request.json
-    for k in ['name', 'sgt', 'cf_token', 'cf_zone_id', 'cf_domain']:
+    for k in ['name', 'sgt', 'api_base', 'cf_token', 'cf_zone_id', 'cf_domain']:
         if k in data:
             group[k] = data[k]
     save_config(config)
@@ -533,7 +538,9 @@ def manual_replace(profile_id):
     try:
         rt = get_runtime(profile_id)
         old_ip = rt.get('ipv4', '')
-        result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''))
+        grp = get_group(inst.get('group_id', ''))
+        api_base = grp.get('api_base', '') if grp else ''
+        result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''), api_base)
         add_history(profile_id, inst['name'], '手动换IP', '手动触发换IP成功', 'success')
         send_bark(f'[{inst["name"]}] 手动换IP成功')
         rt['ipv4_fails'] = 0
@@ -559,7 +566,9 @@ def replace_all():
     results = []
     for inst in config.get('instances', []):
         try:
-            do_replace_ip(inst['instance_id'], inst['profile_id'], inst['sgt'], inst.get('region', ''))
+            grp = get_group(inst.get('group_id', ''))
+            api_base = grp.get('api_base', '') if grp else ''
+            do_replace_ip(inst['instance_id'], inst['profile_id'], inst['sgt'], inst.get('region', ''), api_base)
             results.append({'profile_id': inst['profile_id'], 'ok': True})
         except Exception as e:
             results.append({'profile_id': inst['profile_id'], 'ok': False, 'error': str(e)})
@@ -574,7 +583,9 @@ def import_from_sgt():
     if not sgt:
         return jsonify({'error': 'sgt 不能为空'}), 400
     try:
-        profiles = fetch_instance_profiles(sgt)
+        group = next((g for g in config.get('groups', []) if g['id'] == group_id), None)
+        api_base = group.get('api_base', '') if group else ''
+        profiles = fetch_instance_profiles(sgt, api_base)
         added = 0
         for p in profiles:
             existing = any(i['profile_id'] == p['id'] for i in config['instances'])
