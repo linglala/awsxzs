@@ -6,6 +6,11 @@ import string
 import threading
 import subprocess
 import logging
+import hmac
+import hashlib
+import base64
+import uuid
+import urllib.parse
 import requests
 from datetime import datetime
 from functools import wraps
@@ -68,6 +73,14 @@ def get_runtime(profile_id):
 def rand_r(n=11):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
+def today_replace_count():
+    today = datetime.now().strftime('%Y-%m-%d')
+    return sum(
+        1 for h in history
+        if '换IP' in h.get('event', '') and h.get('status') == 'success'
+        and h.get('time', '').startswith(today)
+    )
+
 def add_history(profile_id, name, event, detail, status='info'):
     entry = {
         'id': rand_r(8),
@@ -81,6 +94,7 @@ def add_history(profile_id, name, event, detail, status='info'):
     history.insert(0, entry)
     save_history(history)
     socketio.emit('history_update', entry)
+    socketio.emit('stats_update', {'today_replace_count': today_replace_count()})
     return entry
 
 def send_bark(msg):
@@ -199,6 +213,133 @@ def cf_remove_blocked_ip(group, ip, profile_id='', name=''):
     except Exception as e:
         log.warning(f'CF DNS 删除失败: {e}')
 
+# ========== 阿里云 DNS API ==========
+ALIDNS_ENDPOINT = 'https://alidns.aliyuncs.com'
+
+def ali_percent_encode(s):
+    s = urllib.parse.quote(str(s), safe='')
+    return s.replace('+', '%20').replace('*', '%2A').replace('%7E', '~')
+
+def ali_sign(params, secret):
+    sorted_items = sorted(params.items())
+    canonicalized = '&'.join(f'{ali_percent_encode(k)}={ali_percent_encode(v)}' for k, v in sorted_items)
+    string_to_sign = 'GET&%2F&' + ali_percent_encode(canonicalized)
+    h = hmac.new((secret + '&').encode('utf-8'), string_to_sign.encode('utf-8'), hashlib.sha1)
+    return base64.b64encode(h.digest()).decode('utf-8')
+
+def ali_request(ak_id, ak_secret, action, extra_params):
+    params = {
+        'Format': 'JSON',
+        'Version': '2015-01-09',
+        'AccessKeyId': ak_id,
+        'SignatureMethod': 'HMAC-SHA1',
+        'Timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'SignatureVersion': '1.0',
+        'SignatureNonce': str(uuid.uuid4()),
+        'Action': action,
+        **extra_params
+    }
+    params['Signature'] = ali_sign(params, ak_secret)
+    resp = requests.get(ALIDNS_ENDPOINT, params=params, timeout=10)
+    data = resp.json()
+    if 'Code' in data:
+        raise Exception(f"{data.get('Code')}: {data.get('Message')}")
+    return data
+
+def ali_list_records(ak_id, ak_secret, domain, rr, record_type='A'):
+    data = ali_request(ak_id, ak_secret, 'DescribeDomainRecords', {
+        'DomainName': domain, 'RRKeyWord': rr, 'TypeKeyWord': record_type, 'PageSize': 100
+    })
+    records = data.get('DomainRecords', {}).get('Record', [])
+    # RRKeyWord 是模糊匹配，这里再精确过滤一次
+    return [r for r in records if r.get('RR') == rr]
+
+def ali_add_record(ak_id, ak_secret, domain, rr, ip, record_type='A'):
+    return ali_request(ak_id, ak_secret, 'AddDomainRecord', {
+        'DomainName': domain, 'RR': rr, 'Type': record_type, 'Value': ip, 'TTL': 600
+    })
+
+def ali_delete_record(ak_id, ak_secret, record_id):
+    return ali_request(ak_id, ak_secret, 'DeleteDomainRecord', {'RecordId': record_id})
+
+def ali_update_dns(group, old_ip, new_ip, profile_id='', name=''):
+    ak_id = group.get('ali_ak_id', '')
+    ak_secret = group.get('ali_ak_secret', '')
+    domain = group.get('ali_domain', '')
+    rr = group.get('ali_rr', '').strip() or '@'
+    if not ak_id or not ak_secret or not domain:
+        return
+    try:
+        records = ali_list_records(ak_id, ak_secret, domain, rr)
+        for r in records:
+            if r.get('Value') == old_ip:
+                ali_delete_record(ak_id, ak_secret, r['RecordId'])
+                log.info(f'阿里云 DNS 删除旧IP: {old_ip}')
+        existing_ips = [r.get('Value') for r in ali_list_records(ak_id, ak_secret, domain, rr)]
+        if new_ip not in existing_ips:
+            ali_add_record(ak_id, ak_secret, domain, rr, new_ip)
+            log.info(f'阿里云 DNS 添加新IP: {new_ip}')
+            if profile_id and name:
+                add_history(profile_id, name, '阿里云新增IP', f'已将 {new_ip} 添加到 {rr}.{domain}', 'success')
+    except Exception as e:
+        log.warning(f'阿里云 DNS 更新失败: {e}')
+
+def ali_remove_blocked_ip(group, ip, profile_id='', name=''):
+    ak_id = group.get('ali_ak_id', '')
+    ak_secret = group.get('ali_ak_secret', '')
+    domain = group.get('ali_domain', '')
+    rr = group.get('ali_rr', '').strip() or '@'
+    if not ak_id or not ak_secret or not domain:
+        return
+    try:
+        records = ali_list_records(ak_id, ak_secret, domain, rr)
+        for r in records:
+            if r.get('Value') == ip:
+                ali_delete_record(ak_id, ak_secret, r['RecordId'])
+                log.info(f'阿里云 DNS 删除被墙IP: {ip}')
+                if profile_id and name:
+                    add_history(profile_id, name, '阿里云删除IP', f'已从 {rr}.{domain} 删除被墙IP: {ip}', 'error')
+    except Exception as e:
+        log.warning(f'阿里云 DNS 删除失败: {e}')
+
+# ========== DNS 统一分发（同时支持 Cloudflare / 阿里云，按分组配置各自生效）==========
+def sync_dns_add(group, ip, profile_id='', name=''):
+    """首次上报IP，直接添加到已配置的DNS服务商"""
+    token = group.get('cf_token', '')
+    zone_id = group.get('cf_zone_id', '')
+    cf_domain = group.get('cf_domain', '')
+    if token and zone_id and cf_domain:
+        try:
+            existing_ips = [r['content'] for r in cf_list_records(token, zone_id, cf_domain)]
+            if ip not in existing_ips:
+                cf_add_record(token, zone_id, cf_domain, ip)
+                add_history(profile_id, name, 'CF新增IP', f'已将 {ip} 添加到 {cf_domain}', 'success')
+                log.info(f'CF DNS 首次上报添加IP: {ip}')
+        except Exception as e:
+            log.warning(f'CF DNS 首次添加失败: {e}')
+
+    ak_id = group.get('ali_ak_id', '')
+    ak_secret = group.get('ali_ak_secret', '')
+    ali_domain = group.get('ali_domain', '')
+    rr = group.get('ali_rr', '').strip() or '@'
+    if ak_id and ak_secret and ali_domain:
+        try:
+            existing_ips = [r.get('Value') for r in ali_list_records(ak_id, ak_secret, ali_domain, rr)]
+            if ip not in existing_ips:
+                ali_add_record(ak_id, ak_secret, ali_domain, rr, ip)
+                add_history(profile_id, name, '阿里云新增IP', f'已将 {ip} 添加到 {rr}.{ali_domain}', 'success')
+                log.info(f'阿里云 DNS 首次上报添加IP: {ip}')
+        except Exception as e:
+            log.warning(f'阿里云 DNS 首次添加失败: {e}')
+
+def sync_dns_update(group, old_ip, new_ip, profile_id='', name=''):
+    cf_update_dns(group, old_ip, new_ip, profile_id, name)
+    ali_update_dns(group, old_ip, new_ip, profile_id, name)
+
+def sync_dns_remove_blocked(group, ip, profile_id='', name=''):
+    cf_remove_blocked_ip(group, ip, profile_id, name)
+    ali_remove_blocked_ip(group, ip, profile_id, name)
+
 # ========== IP 检测 ==========
 def check_tcp(ip, port, timeout=5):
     import socket
@@ -310,10 +451,10 @@ def monitor_loop():
                 rt['ipv6_fails'] = 0
                 socketio.emit('replacing', {'profile_id': profile_id})
 
-                # 先从CF DNS删除被墙IP
+                # 先从DNS（CF/阿里云）删除被墙IP
                 group = get_group(inst.get('group_id', ''))
                 if group:
-                    cf_remove_blocked_ip(group, old_ip, profile_id, inst['name'])
+                    sync_dns_remove_blocked(group, old_ip, profile_id, inst['name'])
 
                 try:
                     grp = get_group(inst.get('group_id', ''))
@@ -434,7 +575,11 @@ def add_group():
         'api_base': data.get('api_base', ''),
         'cf_token': data.get('cf_token', ''),
         'cf_zone_id': data.get('cf_zone_id', ''),
-        'cf_domain': data.get('cf_domain', '')
+        'cf_domain': data.get('cf_domain', ''),
+        'ali_ak_id': data.get('ali_ak_id', ''),
+        'ali_ak_secret': data.get('ali_ak_secret', ''),
+        'ali_domain': data.get('ali_domain', ''),
+        'ali_rr': data.get('ali_rr', '')
     }
     config.setdefault('groups', []).append(group)
     save_config(config)
@@ -447,7 +592,8 @@ def update_group(group_id):
     if not group:
         return jsonify({'error': '不存在'}), 404
     data = request.json
-    for k in ['name', 'sgt', 'api_base', 'cf_token', 'cf_zone_id', 'cf_domain']:
+    for k in ['name', 'sgt', 'api_base', 'cf_token', 'cf_zone_id', 'cf_domain',
+              'ali_ak_id', 'ali_ak_secret', 'ali_domain', 'ali_rr']:
         if k in data:
             group[k] = data[k]
     save_config(config)
@@ -468,6 +614,20 @@ def get_cf_records(group_id):
         return jsonify({'error': '不存在'}), 404
     try:
         records = cf_list_records(group['cf_token'], group['cf_zone_id'], group['cf_domain'])
+        return jsonify({'ok': True, 'records': records})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/groups/<group_id>/ali-records', methods=['GET'])
+@login_required
+def get_ali_records(group_id):
+    group = get_group(group_id)
+    if not group:
+        return jsonify({'error': '不存在'}), 404
+    try:
+        rr = (group.get('ali_rr') or '').strip() or '@'
+        records = ali_list_records(group.get('ali_ak_id', ''), group.get('ali_ak_secret', ''),
+                                    group.get('ali_domain', ''), rr)
         return jsonify({'ok': True, 'records': records})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -640,26 +800,15 @@ def report_ip():
     rt['ipv4_fails'] = 0
     rt['ipv6_fails'] = 0
 
-    # 更新CF DNS
+    # 更新DNS（Cloudflare / 阿里云，按分组配置各自生效）
     group = get_group(inst.get('group_id', ''))
     if group:
         if old_ip and old_ip != ip:
             # IP变了，删旧的加新的
-            cf_update_dns(group, old_ip, ip, pid, inst['name'])
+            sync_dns_update(group, old_ip, ip, pid, inst['name'])
         elif not old_ip:
-            # 第一次上报，直接添加到CF DNS
-            try:
-                token = group.get('cf_token', '')
-                zone_id = group.get('cf_zone_id', '')
-                domain = group.get('cf_domain', '')
-                if token and zone_id and domain:
-                    existing_ips = [r['content'] for r in cf_list_records(token, zone_id, domain)]
-                    if ip not in existing_ips:
-                        cf_add_record(token, zone_id, domain, ip)
-                        add_history(pid, inst['name'], 'CF新增IP', f'已将 {ip} 添加到 {domain}', 'success')
-                        log.info(f'CF DNS 首次上报添加IP: {ip}')
-            except Exception as e:
-                log.warning(f'CF DNS 首次添加失败: {e}')
+            # 第一次上报，直接添加到已配置的DNS服务商
+            sync_dns_add(group, ip, pid, inst['name'])
 
     socketio.emit('status_update', {
         'profile_id': pid,
@@ -679,6 +828,11 @@ def report_ip():
 @login_required
 def get_history():
     return jsonify(history[:100])
+
+@app.route('/api/stats', methods=['GET'])
+@login_required
+def get_stats():
+    return jsonify({'today_replace_count': today_replace_count()})
 
 @app.route('/api/history', methods=['DELETE'])
 @login_required
