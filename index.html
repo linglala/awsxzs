@@ -542,6 +542,7 @@ socket.on('history_update', entry => {
   historyData.unshift(entry);
   renderHistory();
 });
+socket.on('instances_updated', () => { refreshInstances(); });
 socket.on('stats_update', data => {
   document.getElementById('s-replaced').textContent = data.today_replace_count;
 });

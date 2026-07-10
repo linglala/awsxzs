@@ -66,7 +66,8 @@ def get_runtime(profile_id):
         runtime[profile_id] = {
             'ipv4_fails': 0, 'ipv6_fails': 0,
             'ipv4_status': 'unknown', 'ipv6_status': 'unknown',
-            'ipv4': '', 'ipv6': '', 'replacing': False, 'last_check': ''
+            'ipv4': '', 'ipv6': '', 'replacing': False, 'last_check': '',
+            'replace_fails': 0
         }
     return runtime[profile_id]
 
@@ -380,9 +381,12 @@ def get_group(group_id):
 def monitor_loop():
     log.info('监控线程启动')
     while not stop_event.is_set():
-        for inst in config.get('instances', []):
+        for inst in list(config.get('instances', [])):
             if stop_event.is_set():
                 break
+            # 实例可能在本轮循环中已被自动删除，需要跳过
+            if not any(i['profile_id'] == inst['profile_id'] for i in config.get('instances', [])):
+                continue
             profile_id = inst['profile_id']
             rt = get_runtime(profile_id)
             if rt['replacing']:
@@ -461,13 +465,22 @@ def monitor_loop():
                     api_base = grp.get('api_base', '') if grp else ''
                     result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''), api_base)
                     msg = 'IP被墙，已自动换IP'
+                    rt['replace_fails'] = 0
                     add_history(profile_id, inst['name'], '自动换IP', msg, 'success')
                     send_bark(f'[{inst["name"]}] {msg}')
                     time.sleep(300)  # 等待新IP生效
                 except Exception as e:
-                    msg = f'换IP失败: {e}'
+                    rt['replace_fails'] += 1
+                    replace_fail_limit = 3
+                    msg = f'换IP失败: {e} (连续失败 {rt["replace_fails"]}/{replace_fail_limit})'
                     add_history(profile_id, inst['name'], '换IP失败', msg, 'error')
                     send_bark(f'[{inst["name"]}] {msg}')
+                    if rt['replace_fails'] >= replace_fail_limit:
+                        del_msg = f'换IP接口连续失败 {replace_fail_limit} 次，已自动删除该实例'
+                        add_history(profile_id, inst['name'], '自动删除实例', del_msg, 'error')
+                        send_bark(f'[{inst["name"]}] {del_msg}')
+                        remove_instance(profile_id)
+                        socketio.emit('instances_updated', {})
                 finally:
                     rt['replacing'] = False
 
@@ -667,13 +680,17 @@ def add_instance():
     add_history(inst['profile_id'], inst['name'], '添加实例', '实例已添加', 'info')
     return jsonify({'ok': True, 'instance': inst})
 
-@app.route('/api/instances/<profile_id>', methods=['DELETE'])
-@login_required
-def delete_instance(profile_id):
+def remove_instance(profile_id):
+    """从配置和运行时状态中彻底移除一个实例"""
     config['instances'] = [i for i in config['instances'] if i['profile_id'] != profile_id]
     save_config(config)
     if profile_id in runtime:
         del runtime[profile_id]
+
+@app.route('/api/instances/<profile_id>', methods=['DELETE'])
+@login_required
+def delete_instance(profile_id):
+    remove_instance(profile_id)
     return jsonify({'ok': True})
 
 @app.route('/api/instances/<profile_id>/edit', methods=['POST'])
@@ -705,6 +722,7 @@ def manual_replace(profile_id):
         send_bark(f'[{inst["name"]}] 手动换IP成功')
         rt['ipv4_fails'] = 0
         rt['ipv6_fails'] = 0
+        rt['replace_fails'] = 0
         return jsonify({'ok': True, 'result': result})
     except Exception as e:
         add_history(profile_id, inst['name'], '手动换IP失败', str(e), 'error')
@@ -799,6 +817,7 @@ def report_ip():
         rt['ipv6'] = ipv6
     rt['ipv4_fails'] = 0
     rt['ipv6_fails'] = 0
+    rt['replace_fails'] = 0
 
     # 更新DNS（Cloudflare / 阿里云，按分组配置各自生效）
     group = get_group(inst.get('group_id', ''))
