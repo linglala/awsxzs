@@ -58,6 +58,7 @@ def save_history(h):
         json.dump(h[-200:], f, indent=2, ensure_ascii=False)
 
 config = load_config()
+config.setdefault('deleted_profile_ids', [])
 history = load_history()
 runtime = {}
 
@@ -495,7 +496,10 @@ def monitor_loop():
                 try:
                     profiles = fetch_instance_profiles(sgt, g.get('api_base', ''))
                     added = 0
+                    deleted_ids = set(config.get('deleted_profile_ids', []))
                     for p in profiles:
+                        if p['id'] in deleted_ids:
+                            continue  # 之前被删除过（自动或手动），不再重新导入
                         existing = any(i['profile_id'] == p['id'] for i in config['instances'])
                         if not existing:
                             inst = {
@@ -681,8 +685,13 @@ def add_instance():
     return jsonify({'ok': True, 'instance': inst})
 
 def remove_instance(profile_id):
-    """从配置和运行时状态中彻底移除一个实例"""
+    """从配置和运行时状态中彻底移除一个实例，并加入黑名单防止自动同步重新导入"""
     config['instances'] = [i for i in config['instances'] if i['profile_id'] != profile_id]
+    deleted_ids = config.setdefault('deleted_profile_ids', [])
+    if profile_id not in deleted_ids:
+        deleted_ids.append(profile_id)
+        # 黑名单最多保留最近500条，避免无限增长
+        config['deleted_profile_ids'] = deleted_ids[-500:]
     save_config(config)
     if profile_id in runtime:
         del runtime[profile_id]
