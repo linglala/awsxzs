@@ -58,7 +58,7 @@ def save_history(h):
         json.dump(h[-200:], f, indent=2, ensure_ascii=False)
 
 config = load_config()
-config.setdefault('deleted_profile_ids', [])
+config.setdefault('deleted_profile_ids', {})
 history = load_history()
 runtime = {}
 
@@ -121,10 +121,17 @@ HEADERS = {
 def fetch_instance_profiles(sgt, api_base=''):
     r = rand_r()
     base = api_base.rstrip('/') if api_base else AWSSB_BASE
-    resp = requests.get(f'{base}/ec2-instance-profiles?r={r}',
-                        headers={**HEADERS, 'x-share-group-token': sgt}, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+    headers = {**HEADERS, 'x-share-group-token': sgt}
+    for attempt in range(3):
+        resp = requests.get(f'{base}/ec2-instance-profiles?r={r}',
+                            headers=headers, timeout=15)
+        if resp.status_code == 429 and attempt < 2:
+            wait = 30 * (attempt + 1)
+            log.warning(f'aws.sb 查询限流(429)，{wait}秒后重试({attempt+1}/2)')
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.json()
 
 def do_replace_ip(instance_id, profile_id, sgt, region='', api_base=''):
     r = rand_r()
@@ -132,18 +139,24 @@ def do_replace_ip(instance_id, profile_id, sgt, region='', api_base=''):
     headers = {**HEADERS, 'x-share-group-token': sgt}
     if region:
         headers['x-region-name'] = region
-    resp = requests.patch(
-        f'{base}/ec2-instances/{instance_id}/ip-address?r={r}',
-        headers=headers,
-        json={
-            'gfw_blocked_check': True,
-            'gfw_blocked_check_port': 22,
-            'gfw_blocked_check_cron': '*/15 * * * *'
-        },
-        timeout=15
-    )
-    resp.raise_for_status()
-    return resp.json()
+    for attempt in range(3):
+        resp = requests.patch(
+            f'{base}/ec2-instances/{instance_id}/ip-address?r={r}',
+            headers=headers,
+            json={
+                'gfw_blocked_check': True,
+                'gfw_blocked_check_port': 22,
+                'gfw_blocked_check_cron': '*/15 * * * *'
+            },
+            timeout=15
+        )
+        if resp.status_code == 429 and attempt < 2:
+            wait = 30 * (attempt + 1)
+            log.warning(f'aws.sb 换IP限流(429)，{wait}秒后重试({attempt+1}/2)')
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.json()
 
 # ========== Cloudflare API ==========
 CF_BASE = 'https://api.cloudflare.com/client/v4'
@@ -392,7 +405,9 @@ def monitor_loop():
             rt = get_runtime(profile_id)
             if rt['replacing']:
                 continue
-
+            # 换IP失败冷却中，跳过该实例，避免频繁请求被aws.sb限流
+            if rt.get('next_retry') and time.time() < rt['next_retry']:
+                continue
             port = inst.get('check_port', config.get('check_port', 22))
             threshold = config.get('fail_threshold', 3)
             now = datetime.now().strftime('%H:%M:%S')
@@ -467,11 +482,13 @@ def monitor_loop():
                     result = do_replace_ip(inst['instance_id'], profile_id, inst['sgt'], inst.get('region', ''), api_base)
                     msg = 'IP被墙，已自动换IP'
                     rt['replace_fails'] = 0
+                    rt.pop('next_retry', None)
                     add_history(profile_id, inst['name'], '自动换IP', msg, 'success')
                     send_bark(f'[{inst["name"]}] {msg}')
                     time.sleep(300)  # 等待新IP生效
                 except Exception as e:
                     rt['replace_fails'] += 1
+                    rt['next_retry'] = time.time() + 300  # 失败后冷却5分钟再试
                     replace_fail_limit = 3
                     msg = f'换IP失败: {e} (连续失败 {rt["replace_fails"]}/{replace_fail_limit})'
                     add_history(profile_id, inst['name'], '换IP失败', msg, 'error')
@@ -487,7 +504,7 @@ def monitor_loop():
 
         # 每3分钟自动同步机器列表
         current_time = int(time.time())
-        if not hasattr(monitor_loop, 'last_sync') or current_time - monitor_loop.last_sync > 180:
+        if not hasattr(monitor_loop, 'last_sync') or current_time - monitor_loop.last_sync > 600:
             monitor_loop.last_sync = current_time
             for g in config.get('groups', []):
                 sgt = g.get('sgt', '').strip()
@@ -496,10 +513,15 @@ def monitor_loop():
                 try:
                     profiles = fetch_instance_profiles(sgt, g.get('api_base', ''))
                     added = 0
-                    deleted_ids = set(config.get('deleted_profile_ids', []))
+                    _d = config.get('deleted_profile_ids', {})
+                    if not isinstance(_d, dict):
+                        _d = {x: '' for x in _d}
                     for p in profiles:
-                        if p['id'] in deleted_ids:
-                            continue  # 之前被删除过（自动或手动），不再重新导入
+                        # aws.sb 会复用已删除机器的 profile_id 给新机器，
+                        # 只有 profile_id 和 instance_id 都匹配黑名单时才跳过；
+                        # id 被复用时 instance_id 对不上，新机器正常导入
+                        if _d.get(p['id']) == p['instanceId']:
+                            continue  # 同一台机器之前被删除过，不再重新导入
                         existing = any(i['profile_id'] == p['id'] for i in config['instances'])
                         if not existing:
                             inst = {
@@ -686,12 +708,18 @@ def add_instance():
 
 def remove_instance(profile_id):
     """从配置和运行时状态中彻底移除一个实例，并加入黑名单防止自动同步重新导入"""
+    inst = next((i for i in config['instances'] if i['profile_id'] == profile_id), None)
     config['instances'] = [i for i in config['instances'] if i['profile_id'] != profile_id]
-    deleted_ids = config.setdefault('deleted_profile_ids', [])
+    # 兼容黑名单的两种历史格式：列表 ['id',...] 或字典 {'id': 'instanceId',...}
+    deleted_ids = config.setdefault('deleted_profile_ids', {})
+    if isinstance(deleted_ids, list):
+        deleted_ids = {x: '' for x in deleted_ids}
     if profile_id not in deleted_ids:
-        deleted_ids.append(profile_id)
+        deleted_ids[profile_id] = (inst or {}).get('instance_id', '')
         # 黑名单最多保留最近500条，避免无限增长
-        config['deleted_profile_ids'] = deleted_ids[-500:]
+        while len(deleted_ids) > 500:
+            deleted_ids.pop(next(iter(deleted_ids)))
+        config['deleted_profile_ids'] = deleted_ids
     save_config(config)
     if profile_id in runtime:
         del runtime[profile_id]
