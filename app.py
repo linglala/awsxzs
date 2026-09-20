@@ -513,17 +513,44 @@ def monitor_loop():
                 try:
                     profiles = fetch_instance_profiles(sgt, g.get('api_base', ''))
                     added = 0
+                    removed = 0
+                    # 该分组下已从 aws.sb 列表消失的实例（已终止/释放），自动从面板移除。
+                    # 注意：这里有意不进黑名单——aws.sb 会复用 profile_id，进黑名单会误伤未来的新机器
+                    current_ids = {p['id'] for p in profiles}
+                    for inst in list(config['instances']):
+                        if inst.get('sgt') == sgt and inst['profile_id'] not in current_ids:
+                            config['instances'] = [i for i in config['instances'] if i['profile_id'] != inst['profile_id']]
+                            runtime.pop(inst['profile_id'], None)
+                            removed += 1
+                            log.info(f'自动移除已消失实例: {inst["name"]}')
+                            add_history(inst['profile_id'], inst['name'], '自动移除实例', '该实例已从 aws.sb 列表消失（可能已终止/释放）', 'info')
                     _d = config.get('deleted_profile_ids', {})
                     if not isinstance(_d, dict):
                         _d = {x: '' for x in _d}
                     for p in profiles:
                         # aws.sb 会复用已删除机器的 profile_id 给新机器，
-                        # 只有 profile_id 和 instance_id 都匹配黑名单时才跳过；
-                        # id 被复用时 instance_id 对不上，新机器正常导入
+                        # 只有 profile_id 和 instance_id 都匹配黑名单时才跳过
                         if _d.get(p['id']) == p['instanceId']:
                             continue  # 同一台机器之前被删除过，不再重新导入
-                        existing = any(i['profile_id'] == p['id'] for i in config['instances'])
-                        if not existing:
+                        inst = next((i for i in config['instances'] if i['profile_id'] == p['id']), None)
+                        if inst and inst.get('instance_id') == p['instanceId']:
+                            continue  # 同一台机器，已在管理中
+                        if inst:
+                            # profile_id 被 aws.sb 复用给了新机器：原地替换记录并重置运行状态
+                            old_name = inst['name']
+                            inst['instance_id'] = p['instanceId']
+                            inst['name'] = p.get('instanceName') or p['instanceId']
+                            inst['region'] = p.get('regionName', '')
+                            runtime[p['id']] = {
+                                'ipv4_fails': 0, 'ipv6_fails': 0,
+                                'ipv4_status': 'unknown', 'ipv6_status': 'unknown',
+                                'ipv4': '', 'ipv6': '', 'replacing': False, 'last_check': '',
+                                'replace_fails': 0
+                            }
+                            added += 1
+                            log.info(f'实例已更换(复用profile): {old_name} -> {inst["name"]}')
+                            add_history(p['id'], inst['name'], '实例更换', f'aws.sb复用profile，旧实例 {old_name} 已替换为新实例', 'info')
+                        else:
                             inst = {
                                 'name': p.get('instanceName') or p['instanceId'],
                                 'sgt': sgt,
@@ -539,12 +566,10 @@ def monitor_loop():
                             config['instances'].append(inst)
                             added += 1
                             log.info(f'自动添加新实例: {inst["name"]}')
-                    if added:
+                    if added or removed:
                         save_config(config)
                         socketio.emit('instances_updated', {})
-                        log.info(f'自动同步 {g["name"]}: 共{len(profiles)}台, 新增{added}台')
-                    else:
-                        log.info(f'自动同步 {g["name"]}: 共{len(profiles)}台, 无新增')
+                    log.info(f'自动同步 {g["name"]}: aws.sb共{len(profiles)}台, 新增{added}台, 移除{removed}台')
                 except Exception as e:
                     log.warning(f'自动同步失败 {g["name"]}: {e}')
 
