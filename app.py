@@ -542,22 +542,38 @@ def monitor_loop():
                     if added:
                         save_config(config)
                         socketio.emit('instances_updated', {})
+                        log.info(f'自动同步 {g["name"]}: 共{len(profiles)}台, 新增{added}台')
+                    else:
+                        log.info(f'自动同步 {g["name"]}: 共{len(profiles)}台, 无新增')
                 except Exception as e:
                     log.warning(f'自动同步失败 {g["name"]}: {e}')
 
         stop_event.wait(config.get('check_interval', 60))
     log.info('监控线程停止')
 
+_guard_stop = threading.Event()
+
+def _monitor_guard():
+    """守护线程：监控线程意外退出时自动拉起，保证同步/检测永不间断"""
+    while not _guard_stop.is_set():
+        t = threading.Thread(target=monitor_loop, daemon=True)
+        t.start()
+        t.join()
+        if not _guard_stop.is_set() and not stop_event.is_set():
+            log.error('监控线程意外退出，3秒后自动拉起')
+            time.sleep(3)
+
 def start_monitor():
     global stop_event
     stop_event.clear()
-    t = threading.Thread(target=monitor_loop, daemon=True)
-    t.start()
+    _guard_stop.clear()
+    threading.Thread(target=_monitor_guard, daemon=True).start()
 
 def restart_monitor():
     global stop_event
+    _guard_stop.set()
     stop_event.set()
-    time.sleep(1)
+    time.sleep(1.5)
     start_monitor()
 
 # ========== 登录验证 ==========
